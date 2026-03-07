@@ -180,6 +180,7 @@ body {
 
 /* Glass card */
 .glass-card {
+  position: relative;
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
@@ -187,6 +188,12 @@ body {
   -webkit-backdrop-filter: blur(18px);
   overflow: hidden;
   margin-bottom: 14px;
+}
+
+/* Custom fix for Add Form Dropdown */
+div#addForm {
+  z-index: 100;
+  overflow: visible;
 }
 
 /* Buttons & Inputs */
@@ -555,7 +562,7 @@ body {
 
 .todo-list {
   list-style: none;
-  padding: 0;
+  padding: 10px;
   max-height: 520px;
   overflow-y: auto;
 }
@@ -576,6 +583,7 @@ body {
 .todo-item {
   position: relative;
   padding: 14px 16px 12px;
+  border-radius: 10px;
   border-bottom: 1px solid rgba(255, 255, 255, .05);
   animation: slideIn .3s ease;
 }
