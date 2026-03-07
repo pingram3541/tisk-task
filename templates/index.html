@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A private modern todo list web app." />
+  <title>Todo List</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+  <!-- Animated background blobs -->
+  <div class="bg-blobs">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <!-- ── Login View ────────────────────────────────────────────────── -->
+  <div class="login-view glass-card" id="loginView">
+    <div class="login-header">
+      <div class="header-icon">&#10003;</div>
+      <h2>Welcome Back</h2>
+      <p>Sign in with your email to access tasks.</p>
+    </div>
+
+    <!-- Step 1: Email -->
+    <div id="emailStep">
+      <input type="email" id="loginEmail" class="form-input form-input-lg" placeholder="Email address"
+        autocomplete="email" />
+      <button id="requestOtpBtn" class="primary-btn btn-lg">Send Login Code</button>
+      <div id="loginMsg" class="form-msg"></div>
+    </div>
+
+    <!-- Step 2: OTP -->
+    <div id="otpStep" style="display: none;">
+      <p class="text-sm text-muted mb-3">Enter the 6-digit code sent to <br /><strong id="displayLoginEmail"
+          class="text-white"></strong></p>
+      <input type="text" id="loginOtp" class="form-input form-input-lg text-center" placeholder="000000" maxlength="6"
+        autocomplete="one-time-code" />
+      <button id="verifyOtpBtn" class="primary-btn btn-lg">Verify & Sign In</button>
+      <button id="backToEmailBtn" class="text-btn text-muted mt-2">Back</button>
+      <div id="otpMsg" class="form-msg"></div>
+    </div>
+  </div>
+
+  <!-- ── Main App View ─────────────────────────────────────────────── -->
+  <div class="app-container" id="appView" style="display: none;">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-top">
+        <div class="sys-title">
+          <span class="header-icon header-icon-sm">&#10003;</span>
+          <h1>Todo List</h1>
+        </div>
+        <div class="user-controls">
+          <span id="currentUserDisplay" class="current-user-name"></span>
+          <button id="adminToggleBtn" class="text-btn" style="display:none;">Admin</button>
+          <button id="logoutBtn" class="text-btn">Sign Out</button>
+        </div>
+      </div>
+      <p class="subtitle" id="dateDisplay"></p>
+    </header>
+
+    <!-- ── Admin Panel (Hidden by default) ─────────────────────────── -->
+    <div class="admin-panel glass-card mb-4" id="adminPanel" style="display:none;">
+      <h3>Admin Dashboard</h4>
+        <div class="admin-layout">
+          <!-- Add User -->
+          <div class="admin-sidebar mt-2">
+            <h4>Invite User</h5>
+              <input type="text" id="adminNewName" class="form-input form-input-sm mb-2" placeholder="Name" />
+              <input type="email" id="adminNewEmail" class="form-input form-input-sm mb-2" placeholder="Email" />
+              <select id="adminNewRole" class="form-input form-input-sm mb-2">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+              <select id="adminNewPerm" class="form-input form-input-sm mb-2">
+                <option value="own">Can see/edit own</option>
+                <option value="all">Can see/edit all</option>
+                <option value="custom">Custom mapping</option>
+              </select>
+              <button id="adminAddUserBtn" class="primary-btn form-input-sm">Add User</button>
+              <div id="adminMsg" class="form-msg mt-2"></div>
+          </div>
+          <!-- User List -->
+          <div class="admin-main mt-2">
+            <div class="table-container">
+              <table class="admin-table text-sm">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Perm</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="adminUserList"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+    </div>
+
+    <!-- ── Add-todo form ───────────────────────────────────────────── -->
+    <div class="add-form glass-card" id="addForm">
+      <div class="add-form-row">
+        <input type="text" id="todoInput" class="form-input" placeholder="What needs to be done?" autocomplete="off" />
+        <button id="addBtn" class="add-btn" aria-label="Add todo">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+            stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="add-form-row add-form-meta">
+        <!-- New Mutli-owner picker -->
+        <div class="dropdown-wrapper">
+          <button id="ownerPickerBtn" class="form-input form-input-sm owner-picker-btn">Assign Owners...</button>
+          <div class="dropdown-menu" id="ownerDropdown">
+            <!-- User checkboxes populated by JS -->
+          </div>
+        </div>
+
+        <input type="text" id="labelsInput" class="form-input form-input-sm" placeholder="Labels (comma separated)"
+          autocomplete="off" />
+
+        <div class="flag-picker" id="flagPicker">
+          <button class="flag-dot" data-color="" title="No flag">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              opacity=".5">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <button class="flag-dot" data-color="red" title="Red flag"><span style="background:#ff4f6d"></span></button>
+          <button class="flag-dot" data-color="orange" title="Orange flag"><span
+              style="background:#ff9f43"></span></button>
+          <button class="flag-dot" data-color="yellow" title="Yellow flag"><span
+              style="background:#feca57"></span></button>
+          <button class="flag-dot" data-color="green" title="Green flag"><span
+              style="background:#0abf53"></span></button>
+          <button class="flag-dot" data-color="blue" title="Blue flag"><span style="background:#54a0ff"></span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Filter toolbar ──────────────────────────────────────────── -->
+    <div class="filter-toolbar glass-card" id="filterToolbar">
+      <!-- Status tabs -->
+      <div class="filter-bar">
+        <button class="filter-btn active" data-filter="all" id="filterAll">All</button>
+        <button class="filter-btn" data-filter="active" id="filterActive">Active</button>
+        <button class="filter-btn" data-filter="completed" id="filterCompleted">Completed</button>
+      </div>
+      <!-- Label & flag chips -->
+      <div class="chip-bar" id="chipBar"></div>
+    </div>
+
+    <!-- ── Todo list card ──────────────────────────────────────────── -->
+    <div class="glass-card main-card">
+      <ul class="todo-list" id="todoList"></ul>
+
+      <div class="empty-state" id="emptyState">
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"
+          stroke-linecap="round" stroke-linejoin="round" opacity=".35">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+        </svg>
+        <p>No tasks found — add one above!</p>
+      </div>
+
+      <div class="card-footer" id="cardFooter">
+        <span id="itemCount">0 items left</span>
+        <button class="clear-btn" id="clearCompletedBtn">Clear completed</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+
+</html>
