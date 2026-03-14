@@ -1,4 +1,4 @@
-"""Todo List Web App — Flask + SQLite backend (Phase 3: Auth & Permissions)."""
+"""Todo List Web App — Flask + SQLite backend (Phase 4: Masquerade, Items, & Stats)."""
 
 import sqlite3
 import os
@@ -8,6 +8,11 @@ from email.message import EmailMessage
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, jsonify, session
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 import config
 
 app = Flask(__name__)
@@ -47,8 +52,18 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
                 completed INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
                 color_flag TEXT NOT NULL DEFAULT '',
+                start_date TEXT,
+                due_date TEXT,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS todo_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+                description TEXT NOT NULL,
+                hours REAL NOT NULL DEFAULT 0.0,
+                sort_order INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS task_owners (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +91,11 @@ def init_db():
             );
             """
         )
+        # Migrations
+        try:
+            conn.execute("ALTER TABLE todos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError: pass
+
         # Seed initial admin account
         admin = conn.execute("SELECT id FROM users WHERE email = ?", (config.ADMIN_EMAIL,)).fetchone()
         if not admin:
@@ -101,6 +121,7 @@ def admin_required(f):
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
+        # Always check the REAL logged in user for admin status
         with get_db() as conn:
             user = conn.execute("SELECT role FROM users WHERE id = ?", (session['user_id'],)).fetchone()
             if not user or user['role'] != 'admin':
@@ -109,17 +130,25 @@ def admin_required(f):
     return decorated_function
 
 def get_current_user(conn):
-    if 'user_id' not in session: return None
-    return conn.execute("SELECT * FROM users WHERE id = ?", (session['user_id'],)).fetchone()
+    """Returns the effective user (masqueraded or real)."""
+    uid = session.get('masquerade_user_id') or session.get('user_id')
+    if not uid: return None
+    return conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+
+def get_real_user(conn):
+    """Returns the actual logged-in user."""
+    uid = session.get('user_id')
+    if not uid: return None
+    return conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
 
 
-def send_otp_email(to_email, code):
+def send_otp_email(to_email, code, subject="Your Code"):
     if not config.SMTP_HOST:
-        print(f"\n[DEV MODE] OTP Code for {to_email}: {code}\n")
+        print(f"\n[DEV MODE] {subject} for {to_email}: {code}\n")
         return
     msg = EmailMessage()
-    msg.set_content(f"Your tellatek task authentication login code is: {code}")
-    msg['Subject'] = "Task System Login Code"
+    msg.set_content(f"{subject}: {code}")
+    msg['Subject'] = subject
     msg['From'] = config.MAIL_FROM
     msg['To'] = to_email
     try:
@@ -137,7 +166,6 @@ def request_otp():
     if not email: return jsonify({'error': 'Email required'}), 400
 
     code = f"{random.randint(0, 999999):06d}"
-    # code = "123456"
     expires_at = (datetime.utcnow() + timedelta(seconds=config.OTP_EXPIRY_SECONDS)).isoformat()
     
     with get_db() as conn:
@@ -154,7 +182,7 @@ def request_otp():
         )
         conn.commit()
 
-    send_otp_email(email, code)
+    send_otp_email(email, code, "Login Code")
     return jsonify({'message': 'Code sent'})
 
 
@@ -177,6 +205,7 @@ def verify_otp():
         conn.execute("UPDATE otp_codes SET used = 1 WHERE id = ?", (row['id'],))
         user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         session['user_id'] = user['id']
+        session.pop('masquerade_user_id', None) 
         conn.commit()
         return jsonify(dict(user))
 
@@ -191,9 +220,84 @@ def logout():
 def get_me():
     if 'user_id' not in session:
         return jsonify(None)
+    try:
+        with get_db() as conn:
+            real_user = get_real_user(conn)
+            if not real_user:
+                session.clear()
+                return jsonify(None)
+            
+            eff_user = get_current_user(conn)
+            # If masqueraded user doesn't exist, fallback
+            if not eff_user:
+                session.pop('masquerade_user_id', None)
+                eff_user = real_user
+            
+            resp = dict(eff_user)
+            resp['real_user'] = dict(real_user)
+            resp['is_masquerading'] = 'masquerade_user_id' in session
+            return jsonify(resp)
+    except Exception as e:
+        print(f"Error in get_me: {e}")
+        return jsonify(None), 500
+
+
+@app.route('/api/auth/request-email-change', methods=['POST'])
+@login_required
+def request_email_change():
+    data = request.get_json(force=True)
+    new_email = data.get('new_email', '').strip().lower()
+    if not new_email: return jsonify({'error': 'New email required'}), 400
+
     with get_db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (session['user_id'],)).fetchone()
-        return jsonify(dict(user) if user else None)
+        eff_user = get_current_user(conn)
+        if not eff_user: return jsonify({'error': 'User not found'}), 404
+        
+        # Ensure email isn't taken
+        existing = conn.execute("SELECT id FROM users WHERE email = ? AND id != ?", (new_email, eff_user['id'])).fetchone()
+        if existing: return jsonify({'error': 'Email already in use'}), 409
+
+    code = f"{random.randint(0, 999999):06d}"
+    expires_at = (datetime.utcnow() + timedelta(seconds=config.OTP_EXPIRY_SECONDS)).isoformat()
+    
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO otp_codes (email, code, expires_at) VALUES (?, ?, ?)",
+            (new_email, code, expires_at)
+        )
+        conn.commit()
+
+    send_otp_email(new_email, code, "Verify New Email")
+    return jsonify({'message': 'Code sent to new email'})
+
+
+@app.route('/api/auth/verify-email-change', methods=['POST'])
+@login_required
+def verify_email_change():
+    data = request.get_json(force=True)
+    new_email = data.get('new_email', '').strip().lower()
+    code = data.get('code', '').strip()
+    
+    if not new_email or not code: return jsonify({'error': 'Email and code required'}), 400
+
+    with get_db() as conn:
+        eff_user = get_current_user(conn)
+        if not eff_user: return jsonify({'error': 'User not found'}), 404
+
+        now = datetime.utcnow().isoformat()
+        row = conn.execute(
+            "SELECT * FROM otp_codes WHERE email = ? AND code = ? AND used = 0 AND expires_at > ? ORDER BY id DESC LIMIT 1",
+            (new_email, code, now)
+        ).fetchone()
+        
+        if not row:
+            return jsonify({'error': 'Invalid or expired code'}), 401
+        
+        conn.execute("UPDATE otp_codes SET used = 1 WHERE id = ?", (row['id'],))
+        conn.execute("UPDATE users SET email = ? WHERE id = ?", (new_email, eff_user['id']))
+        conn.commit()
+        
+    return jsonify({'message': 'Email updated successfully'})
 
 
 @app.route("/api/users", methods=["GET"])
@@ -224,10 +328,16 @@ def _todo_dict(conn, row):
     ]
     d["comments"] = [
         dict(c) for c in conn.execute(
-            """SELECT c.*, u.name as owner_name 
+            """SELECT c.*, u.name as owner_name, u.email as owner_email 
                FROM comments c
                JOIN users u ON c.user_id = u.id
                WHERE c.todo_id = ? ORDER BY c.created_at ASC""",
+            (d["id"],)
+        ).fetchall()
+    ]
+    d["items"] = [
+        dict(i) for i in conn.execute(
+            "SELECT * FROM todo_items WHERE todo_id = ? ORDER BY sort_order ASC, id ASC",
             (d["id"],)
         ).fetchall()
     ]
@@ -237,19 +347,12 @@ def _todo_dict(conn, row):
 # ── Todo Permissions Helper ─────────────────────────────────────────
 
 def _can_edit(conn, user, todo_id):
+    if not user: return False
     if user['role'] == 'admin' or user['permission'] == 'all':
         return True
-    # Check explicit access grant
-    access = conn.execute(
-        "SELECT 1 FROM user_task_access WHERE user_id=? AND todo_id=?", 
-        (user['id'], todo_id)
-    ).fetchone()
+    access = conn.execute("SELECT 1 FROM user_task_access WHERE user_id=? AND todo_id=?", (user['id'], todo_id)).fetchone()
     if access: return True
-    # Check if is one of the owners
-    owner = conn.execute(
-        "SELECT 1 FROM task_owners WHERE user_id=? AND todo_id=?", 
-        (user['id'], todo_id)
-    ).fetchone()
+    owner = conn.execute("SELECT 1 FROM task_owners WHERE user_id=? AND todo_id=?", (user['id'], todo_id)).fetchone()
     if owner: return True
     return False
 
@@ -261,6 +364,8 @@ def _can_edit(conn, user, todo_id):
 def read_todos():
     with get_db() as conn:
         user = get_current_user(conn)
+        if not user: return jsonify([])
+        
         if user['role'] == 'admin' or user['permission'] == 'all':
             rows = conn.execute("SELECT * FROM todos ORDER BY created_at DESC").fetchall()
         else:
@@ -268,7 +373,7 @@ def read_todos():
                 """SELECT DISTINCT t.* FROM todos t
                    LEFT JOIN task_owners tow ON tow.todo_id = t.id AND tow.user_id = ?
                    LEFT JOIN user_task_access uta ON uta.todo_id = t.id AND uta.user_id = ?
-                   WHERE tow.user_id IS NOT NULL OR uta.user_id IS NOT NULL
+                   WHERE (tow.user_id IS NOT NULL OR uta.user_id IS NOT NULL)
                    ORDER BY t.created_at DESC""",
                 (user['id'], user['id'])
             ).fetchall()
@@ -285,30 +390,33 @@ def create_todo():
     owner_ids = data.get("owner_ids", [])
     color_flag = data.get("color_flag", "").strip()
     labels = data.get("labels", [])
+    start_date = data.get("start_date")
+    due_date = data.get("due_date")
+    items = data.get("items", []) 
     now = datetime.utcnow().isoformat()
 
     with get_db() as conn:
         user = get_current_user(conn)
         cur = conn.execute(
-            "INSERT INTO todos (text, completed, color_flag, created_at) VALUES (?, 0, ?, ?)",
-            (text, color_flag, now)
+            "INSERT INTO todos (text, completed, deleted, color_flag, start_date, due_date, created_at) VALUES (?, 0, 0, ?, ?, ?, ?)",
+            (text, color_flag, start_date, due_date, now)
         )
         todo_id = cur.lastrowid
         
-        # If no owner IDs provided, fallback to task creator
-        if not owner_ids:
-            owner_ids = [user['id']]
-            
+        if not owner_ids: owner_ids = [user['id']]
         for uid in owner_ids:
-            try:
-                conn.execute("INSERT INTO task_owners (todo_id, user_id) VALUES (?, ?)", (todo_id, uid))
+            try: conn.execute("INSERT INTO task_owners (todo_id, user_id) VALUES (?, ?)", (todo_id, uid))
             except sqlite3.IntegrityError: pass
             
         for lbl in labels:
             lbl = lbl.strip()
-            if lbl:
-                conn.execute("INSERT INTO todo_labels (todo_id, label) VALUES (?, ?)", (todo_id, lbl))
-                
+            if lbl: conn.execute("INSERT INTO todo_labels (todo_id, label) VALUES (?, ?)", (todo_id, lbl))
+        
+        for idx, item in enumerate(items):
+            conn.execute(
+                "INSERT INTO todo_items (todo_id, description, hours, sort_order) VALUES (?, ?, ?, ?)",
+                (todo_id, item.get('description', ''), float(item.get('hours', 0)), idx)
+            )
         conn.commit()
         row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
         return jsonify(_todo_dict(conn, row)), 201
@@ -327,26 +435,34 @@ def update_todo(todo_id):
         new_text = data.get("text", row["text"])
         new_completed = data.get("completed", row["completed"])
         new_color_flag = data.get("color_flag", row["color_flag"])
+        new_start_date = data.get("start_date", row["start_date"])
+        new_due_date = data.get("due_date", row["due_date"])
+        new_deleted = data.get("deleted", row["deleted"])
 
         conn.execute(
-            "UPDATE todos SET text=?, completed=?, color_flag=? WHERE id=?",
-            (new_text, int(new_completed), new_color_flag, todo_id)
+            "UPDATE todos SET text=?, completed=?, deleted=?, color_flag=?, start_date=?, due_date=? WHERE id=?",
+            (new_text, int(new_completed), int(new_deleted), new_color_flag, new_start_date, new_due_date, todo_id)
         )
 
         if "owner_ids" in data:
             conn.execute("DELETE FROM task_owners WHERE todo_id = ?", (todo_id,))
             for uid in data["owner_ids"]:
-                try:
-                    conn.execute("INSERT INTO task_owners (todo_id, user_id) VALUES (?, ?)", (todo_id, uid))
+                try: conn.execute("INSERT INTO task_owners (todo_id, user_id) VALUES (?, ?)", (todo_id, uid))
                 except sqlite3.IntegrityError: pass
 
         if "labels" in data:
             conn.execute("DELETE FROM todo_labels WHERE todo_id = ?", (todo_id,))
             for lbl in data["labels"]:
                 lbl = lbl.strip()
-                if lbl:
-                    conn.execute("INSERT INTO todo_labels (todo_id, label) VALUES (?, ?)", (todo_id, lbl))
-                    
+                if lbl: conn.execute("INSERT INTO todo_labels (todo_id, label) VALUES (?, ?)", (todo_id, lbl))
+        
+        if "items" in data:
+            conn.execute("DELETE FROM todo_items WHERE todo_id = ?", (todo_id,))
+            for idx, item in enumerate(data["items"]):
+                conn.execute(
+                    "INSERT INTO todo_items (todo_id, description, hours, sort_order) VALUES (?, ?, ?, ?)",
+                    (todo_id, item.get('description', ''), float(item.get('hours', 0)), idx)
+                )
         conn.commit()
         updated = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
         return jsonify(_todo_dict(conn, updated))
@@ -357,13 +473,52 @@ def update_todo(todo_id):
 def delete_todo(todo_id):
     with get_db() as conn:
         user = get_current_user(conn)
-        row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
-        if row is None: return jsonify({"error": "Not found"}), 404
         if not _can_edit(conn, user, todo_id): return jsonify({"error": "Forbidden"}), 403
-        
-        conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+        conn.execute("UPDATE todos SET deleted = 1 WHERE id = ?", (todo_id,))
         conn.commit()
     return jsonify({"deleted": todo_id})
+
+
+@app.route("/api/todos/<int:todo_id>/undelete", methods=["POST"])
+@login_required
+def undelete_todo(todo_id):
+    with get_db() as conn:
+        user = get_current_user(conn)
+        if not _can_edit(conn, user, todo_id): return jsonify({"error": "Forbidden"}), 403
+        conn.execute("UPDATE todos SET deleted = 0 WHERE id = ?", (todo_id,))
+        conn.commit()
+        updated = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+        return jsonify(_todo_dict(conn, updated))
+
+
+@app.route("/api/todos/<int:todo_id>/permanent", methods=["DELETE"])
+@login_required
+def permanent_delete_todo(todo_id):
+    with get_db() as conn:
+        user = get_current_user(conn)
+        if not _can_edit(conn, user, todo_id): return jsonify({"error": "Forbidden"}), 403
+        conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+        conn.commit()
+    return jsonify({"permanently_deleted": todo_id})
+
+
+@app.route("/api/todos/purge", methods=["DELETE"])
+@login_required
+def purge_deleted_todos():
+    with get_db() as conn:
+        user = get_current_user(conn)
+        if user['role'] == 'admin' or user['permission'] == 'all':
+            conn.execute("DELETE FROM todos WHERE deleted = 1")
+        else:
+            conn.execute("""
+                DELETE FROM todos WHERE deleted = 1 AND id IN (
+                    SELECT todo_id FROM task_owners WHERE user_id = ?
+                    UNION
+                    SELECT todo_id FROM user_task_access WHERE user_id = ?
+                )
+            """, (user['id'], user['id']))
+        conn.commit()
+    return jsonify({"purged": True})
 
 
 # ── Comment CRUD ────────────────────────────────────────────────────
@@ -374,21 +529,13 @@ def create_comment(todo_id):
     data = request.get_json(force=True)
     text = data.get("text", "").strip()
     if not text: return jsonify({"error": "Text is required"}), 400
-
     with get_db() as conn:
         user = get_current_user(conn)
         if not _can_edit(conn, user, todo_id): return jsonify({"error": "Forbidden"}), 403
-
         now = datetime.utcnow().isoformat()
-        cur = conn.execute(
-            "INSERT INTO comments (todo_id, user_id, text, created_at) VALUES (?, ?, ?, ?)",
-            (todo_id, user['id'], text, now)
-        )
+        cur = conn.execute("INSERT INTO comments (todo_id, user_id, text, created_at) VALUES (?, ?, ?, ?)", (todo_id, user['id'], text, now))
         conn.commit()
-        comment = conn.execute(
-            "SELECT c.*, u.name as owner_name FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = ?",
-            (cur.lastrowid,)
-        ).fetchone()
+        comment = conn.execute("SELECT c.*, u.name as owner_name, u.email as owner_email FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = ?", (cur.lastrowid,)).fetchone()
     return jsonify(dict(comment)), 201
 
 
@@ -398,21 +545,14 @@ def update_comment(comment_id):
     data = request.get_json(force=True)
     text = data.get("text", "").strip()
     if not text: return jsonify({"error": "Text is required"}), 400
-
     with get_db() as conn:
         user = get_current_user(conn)
         row = conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
         if row is None: return jsonify({"error": "Not found"}), 404
-        
-        if row['user_id'] != user['id'] and user['role'] != 'admin':
-            return jsonify({"error": "Forbidden"}), 403
-            
+        if row['user_id'] != user['id'] and user['role'] != 'admin': return jsonify({"error": "Forbidden"}), 403
         conn.execute("UPDATE comments SET text = ? WHERE id = ?", (text, comment_id))
         conn.commit()
-        updated = conn.execute(
-            "SELECT c.*, u.name as owner_name FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = ?",
-            (comment_id,)
-        ).fetchone()
+        updated = conn.execute("SELECT c.*, u.name as owner_name, u.email as owner_email FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = ?", (comment_id,)).fetchone()
     return jsonify(dict(updated))
 
 
@@ -423,16 +563,11 @@ def delete_comment(comment_id):
         user = get_current_user(conn)
         row = conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
         if row is None: return jsonify({"error": "Not found"}), 404
-        
-        if row['user_id'] != user['id'] and user['role'] != 'admin':
-            return jsonify({"error": "Forbidden"}), 403
-            
+        if row['user_id'] != user['id'] and user['role'] != 'admin': return jsonify({"error": "Forbidden"}), 403
         conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
         conn.commit()
     return jsonify({"deleted": comment_id})
 
-
-# ── Labels helper ───────────────────────────────────────────────────
 
 @app.route("/api/labels", methods=["GET"])
 @login_required
@@ -448,9 +583,7 @@ def list_labels():
 @admin_required
 def admin_list_users():
     with get_db() as conn:
-        users = conn.execute(
-            "SELECT id, email, name, role, permission, created_at FROM users ORDER BY created_at DESC"
-        ).fetchall()
+        users = conn.execute("SELECT id, email, name, role, permission, created_at FROM users ORDER BY created_at DESC").fetchall()
         return jsonify([dict(u) for u in users])
 
 
@@ -458,25 +591,15 @@ def admin_list_users():
 @admin_required
 def admin_create_user():
     data = request.get_json(force=True)
-    email = data.get('email', '').strip().lower()
-    name = data.get('name', '').strip()
-    role = data.get('role', 'user')
-    permission = data.get('permission', 'own')
-    
-    if not email or not name: 
-        return jsonify({'error': 'Email and name required'}), 400
-        
+    email, name = data.get('email', '').strip().lower(), data.get('name', '').strip()
+    if not email or not name: return jsonify({'error': 'Email and name required'}), 400
     try:
         with get_db() as conn:
-            cur = conn.execute(
-                "INSERT INTO users (email, name, role, permission, created_at) VALUES (?, ?, ?, ?, ?)",
-                (email, name, role, permission, datetime.utcnow().isoformat())
-            )
+            cur = conn.execute("INSERT INTO users (email, name, role, permission, created_at) VALUES (?, ?, ?, ?, ?)", (email, name, data.get('role', 'user'), data.get('permission', 'own'), datetime.utcnow().isoformat()))
             conn.commit()
             u = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
             return jsonify(dict(u)), 201
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'User email exists'}), 409
+    except sqlite3.IntegrityError: return jsonify({'error': 'User email exists'}), 409
 
 
 @app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
@@ -484,10 +607,7 @@ def admin_create_user():
 def admin_update_user(user_id):
     data = request.get_json(force=True)
     with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET role = ?, permission = ? WHERE id = ?",
-            (data.get('role', 'user'), data.get('permission', 'own'), user_id)
-        )
+        conn.execute("UPDATE users SET role = ?, permission = ? WHERE id = ?", (data.get('role', 'user'), data.get('permission', 'own'), user_id))
         conn.commit()
         u = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         return jsonify(dict(u))
@@ -498,35 +618,29 @@ def admin_update_user(user_id):
 def admin_delete_user(user_id):
     with get_db() as conn:
         user = conn.execute("SELECT email FROM users WHERE id=?", (user_id,)).fetchone()
-        if user and user['email'] == config.ADMIN_EMAIL:
-            return jsonify({'error': 'Cannot delete root admin'}), 403
+        if user and user['email'] == config.ADMIN_EMAIL: return jsonify({'error': 'Cannot delete root admin'}), 403
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         conn.commit()
     return jsonify({'deleted': user_id})
 
 
-@app.route("/api/admin/users/<int:user_id>/access", methods=["POST"])
+@app.route("/api/admin/masquerade/<int:user_id>", methods=["POST"])
 @admin_required
-def admin_grant_access(user_id):
-    todo_id = request.get_json(force=True).get('todo_id')
+def admin_masquerade(user_id):
     with get_db() as conn:
-        try:
-            conn.execute("INSERT INTO user_task_access (user_id, todo_id) VALUES (?, ?)", (user_id, todo_id))
-            conn.commit()
-        except sqlite3.IntegrityError: pass
-    return jsonify({'granted': True})
+        target = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target: return jsonify({'error': 'User not found'}), 404
+        session['masquerade_user_id'] = user_id
+        session.modified = True
+    return jsonify({'masquerading': True})
 
 
-@app.route("/api/admin/users/<int:user_id>/access/<int:todo_id>", methods=["DELETE"])
-@admin_required
-def admin_revoke_access(user_id, todo_id):
-    with get_db() as conn:
-        conn.execute("DELETE FROM user_task_access WHERE user_id=? AND todo_id=?", (user_id, todo_id))
-        conn.commit()
-    return jsonify({'revoked': True})
+@app.route("/api/admin/masquerade/quit", methods=["POST"])
+@login_required
+def admin_masquerade_quit():
+    session.pop('masquerade_user_id', None)
+    return jsonify({'masquerading': False})
 
-
-# ── Page ────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -535,4 +649,5 @@ def index():
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5001))
+    app.run(debug=True, port=port)
