@@ -1,4 +1,4 @@
-# Tisk Task v1.0
+# Tisk Task v1.0.3
 
 A sophisticated, modern Todo List application featuring OTP-based authentication, role-based access control (RBAC), and a sleek, responsive UI. Built with Flask, SQLite, and Tailwind CSS.
 

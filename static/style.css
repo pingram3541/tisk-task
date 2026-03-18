@@ -1,4 +1,4 @@
-/* ── Tailwind Custom Extensions & Global Styles ────────────────── */
+/* ── Tisk Task v1.0.3 Custom Styles ────────────────── */
 
 @layer base {
   body {
@@ -7,147 +7,99 @@
   }
 }
 
-/* ── Custom Animations ─────────────────────────────────────────── */
+/* ── Custom Scrollbar ──────────────────────────────────────────── */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
 
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 20px;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e293b;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* ── Animations ────────────────────────────────────────────────── */
 @keyframes modalEnter {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.95);
+    transform: translateY(20px) scale(0.98);
   }
-
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
 }
 
-.animate-modalEnter {
-  animation: modalEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-.animate-fadeIn {
-  animation: fadeIn 0.3s ease-out;
-}
-
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-slideDown {
-  animation: slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* ── Custom Scrollbar ──────────────────────────────────────────── */
-
-::-webkit-scrollbar {
-  width: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #e2e8f0;
-  border-radius: 10px;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: #334155;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #cbd5e1;
-}
-
-/* ── UI Fixes ────────────────────────────────────────────────── */
-
-/* Dialog Backdrop */
+/* ── UI Components ─────────────────────────────────────────────── */
 dialog::backdrop {
-  background: rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(8px);
+  background: rgba(2, 6, 23, 0.8);
+  backdrop-filter: blur(12px);
 }
 
-/* Dark Mode Modal Text Fixes */
-.dark dialog h3,
-.dark dialog h4,
-.dark dialog label {
-  color: #f8fafc !important;
-}
+/* Sidebar Responsive */
+@media (max-width: 1023px) {
+  #leftSidebar {
+    position: fixed;
+    top: 0;
+    left: -280px;
+    bottom: 0;
+    width: 280px;
+    z-index: 100;
+    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex !important;
+    box-shadow: 25px 0 50px -12px rgba(0,0,0,0.25);
+  }
 
-.dark dialog input,
-.dark dialog textarea,
-.dark dialog select {
-  color: #f8fafc !important;
-  background-color: #0f172a !important;
-}
+  #leftSidebar.sidebar-open {
+    left: 0;
+  }
 
-/* Light Mode Modal Text Fixes (Ensuring visibility) */
-dialog h3,
-dialog h4,
-dialog label {
-  color: #1e293b;
-}
+  #activitySidebar {
+    position: fixed;
+    top: 0;
+    right: -340px;
+    bottom: 0;
+    width: 320px;
+    z-index: 100;
+    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex !important;
+    box-shadow: -25px 0 50px -12px rgba(0,0,0,0.25);
+  }
 
-/* Sidebar Active/Hover Fixes */
-/* Active Filter: Blue Icon, White Text (Dark Mode) or Dark Text (Light Mode) */
-.filter-link[data-active="true"] {
-  color: #1e293b !important;
-}
+  #activitySidebar.sidebar-open {
+    right: 0;
+  }
 
-.dark .filter-link[data-active="true"] {
-  color: white !important;
-}
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 6, 23, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 90;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
 
-.filter-link[data-active="true"] svg {
-  color: #3b82f6 !important;
-}
-
-/* Hover: White text ONLY in dark mode */
-.dark .filter-link:hover,
-.dark #chipBar button:hover {
-  color: white !important;
-}
-
-/* Light mode hover should be dark blue/accent, NOT white */
-.filter-link:hover
-
-/*#chipBar button:hover*/
-  {
-  color: #1e293b !important;
-}
-
-/* ── Masquerade Bar ────────────────────────────────────────────── */
-#masqueradeBar {
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  .sidebar-overlay.show {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* ── Rich Editor ───────────────────────────────────────────────── */
-.rich-editor:empty:before {
-  content: attr(placeholder);
-  color: #94a3b8;
-  pointer-events: none;
-  display: block;
-}
-
 .rich-editor ul {
   list-style-type: disc;
   padding-left: 1.5rem;
@@ -155,33 +107,22 @@ dialog label {
 }
 
 .rich-editor a {
-  color: #3b82f6;
+  color: #2563eb;
   text-decoration: underline;
+  font-weight: 700;
 }
 
-/* ── Task Items ────────────────────────────────────────────────── */
-.task-item-row {
-  transition: all 0.2s ease;
+/* ── Masquerade Bar Adjustment ─────────────────────────────────── */
+body.is-masquerading #appView {
+  height: calc(100vh - 40px);
 }
 
-.task-item-row:hover {
-  border-color: rgba(37, 99, 235, 0.3);
+.force-hidden {
+  display: none !important;
 }
 
-/* Admin role selection colors */
-.admin-role-sel option,
-.admin-perm-sel option {
-  background: white;
-  color: #1e293b;
-}
-
-.dark .admin-role-sel option,
-.dark .admin-perm-sel option {
-  background: #0f172a;
-  color: #f8fafc;
-}
-
-/* ── Floating Action Button Shadow ────────────────────────────── */
-.fixed.bottom-8.right-8 {
-  box-shadow: 0 20px 25px -5px rgba(37, 99, 235, 0.3), 0 8px 10px -6px rgba(37, 99, 235, 0.3);
+/* ── Dark Mode Tweaks ─────────────────────────────────────────── */
+.dark input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
 }

@@ -1,4 +1,4 @@
-"""Todo List Web App — Flask + SQLite backend (Phase 4: Masquerade, Items, & Stats)."""
+"""Todo List Web App — Flask + SQLite backend (Phase 4: Masquerade, Items, & Stats). v1.0.3"""
 
 import sqlite3
 import os
@@ -39,6 +39,7 @@ def init_db():
                 name TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'user',
                 permission TEXT NOT NULL DEFAULT 'own',
+                timezone TEXT NOT NULL DEFAULT 'UTC',
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS otp_codes (
@@ -52,6 +53,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
                 completed INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'todo',
                 deleted INTEGER NOT NULL DEFAULT 0,
                 color_flag TEXT NOT NULL DEFAULT '',
                 start_date TEXT,
@@ -95,12 +97,19 @@ def init_db():
         try:
             conn.execute("ALTER TABLE todos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError: pass
+        try:
+            conn.execute("ALTER TABLE todos ADD COLUMN status TEXT NOT NULL DEFAULT 'todo'")
+            conn.execute("UPDATE todos SET status = 'done' WHERE completed = 1")
+        except sqlite3.OperationalError: pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'")
+        except sqlite3.OperationalError: pass
 
         # Seed initial admin account
         admin = conn.execute("SELECT id FROM users WHERE email = ?", (config.ADMIN_EMAIL,)).fetchone()
         if not admin:
             conn.execute(
-                "INSERT INTO users (email, name, role, permission, created_at) VALUES (?, ?, 'admin', 'all', ?)",
+                "INSERT INTO users (email, name, role, permission, timezone, created_at) VALUES (?, ?, 'admin', 'all', 'UTC', ?)",
                 (config.ADMIN_EMAIL, "Admin", datetime.utcnow().isoformat())
             )
         conn.commit()
@@ -300,6 +309,19 @@ def verify_email_change():
     return jsonify({'message': 'Email updated successfully'})
 
 
+@app.route('/api/auth/timezone', methods=['POST'])
+@login_required
+def update_timezone():
+    data = request.get_json(force=True)
+    timezone = data.get('timezone', 'UTC').strip()
+    with get_db() as conn:
+        eff_user = get_current_user(conn)
+        if not eff_user: return jsonify({'error': 'User not found'}), 404
+        conn.execute("UPDATE users SET timezone = ? WHERE id = ?", (timezone, eff_user['id']))
+        conn.commit()
+    return jsonify({'message': 'Timezone updated successfully'})
+
+
 @app.route("/api/users", methods=["GET"])
 @login_required
 def list_users():
@@ -367,14 +389,14 @@ def read_todos():
         if not user: return jsonify([])
         
         if user['role'] == 'admin' or user['permission'] == 'all':
-            rows = conn.execute("SELECT * FROM todos ORDER BY created_at DESC").fetchall()
+            rows = conn.execute("SELECT * FROM todos ORDER BY start_date DESC").fetchall()
         else:
             rows = conn.execute(
                 """SELECT DISTINCT t.* FROM todos t
                    LEFT JOIN task_owners tow ON tow.todo_id = t.id AND tow.user_id = ?
                    LEFT JOIN user_task_access uta ON uta.todo_id = t.id AND uta.user_id = ?
                    WHERE (tow.user_id IS NOT NULL OR uta.user_id IS NOT NULL)
-                   ORDER BY t.created_at DESC""",
+                   ORDER BY t.start_date DESC""",
                 (user['id'], user['id'])
             ).fetchall()
         return jsonify([_todo_dict(conn, r) for r in rows])
@@ -393,13 +415,14 @@ def create_todo():
     start_date = data.get("start_date")
     due_date = data.get("due_date")
     items = data.get("items", []) 
+    status = data.get("status", "todo")
     now = datetime.utcnow().isoformat()
 
     with get_db() as conn:
         user = get_current_user(conn)
         cur = conn.execute(
-            "INSERT INTO todos (text, completed, deleted, color_flag, start_date, due_date, created_at) VALUES (?, 0, 0, ?, ?, ?, ?)",
-            (text, color_flag, start_date, due_date, now)
+            "INSERT INTO todos (text, completed, status, deleted, color_flag, start_date, due_date, created_at) VALUES (?, 0, ?, 0, ?, ?, ?, ?)",
+            (text, status, color_flag, start_date, due_date, now)
         )
         todo_id = cur.lastrowid
         
@@ -434,14 +457,26 @@ def update_todo(todo_id):
 
         new_text = data.get("text", row["text"])
         new_completed = data.get("completed", row["completed"])
+        new_status = data.get("status", row["status"])
         new_color_flag = data.get("color_flag", row["color_flag"])
         new_start_date = data.get("start_date", row["start_date"])
         new_due_date = data.get("due_date", row["due_date"])
         new_deleted = data.get("deleted", row["deleted"])
 
+        # Sync completed and status
+        if "status" in data and data["status"] == "done":
+            new_completed = 1
+        elif "completed" in data and data["completed"] == 1:
+            new_status = "done"
+        elif "status" in data and data["status"] != "done" and "completed" not in data:
+            new_completed = 0
+        elif "completed" in data and data["completed"] == 0 and "status" not in data:
+            if new_status == "done":
+                new_status = "todo"
+
         conn.execute(
-            "UPDATE todos SET text=?, completed=?, deleted=?, color_flag=?, start_date=?, due_date=? WHERE id=?",
-            (new_text, int(new_completed), int(new_deleted), new_color_flag, new_start_date, new_due_date, todo_id)
+            "UPDATE todos SET text=?, completed=?, status=?, deleted=?, color_flag=?, start_date=?, due_date=? WHERE id=?",
+            (new_text, int(new_completed), new_status, int(new_deleted), new_color_flag, new_start_date, new_due_date, todo_id)
         )
 
         if "owner_ids" in data:

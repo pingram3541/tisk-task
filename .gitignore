@@ -5,6 +5,8 @@ __pycache__/
 venv/
 env/
 .DS_Store
-
+.git/
+.github/
 .gemini/
 gha-creds-*.json
+GEMINI.md
